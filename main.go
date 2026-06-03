@@ -9,13 +9,41 @@ import (
 	"strings"
 )
 
-// ... (keep your getFilesByExt and openLog functions exactly as they are) ...
+func getFilesByExt(dirPath, ext string) ([]string, error) {
+    entries, err := os.ReadDir(dirPath)
+    if err != nil {
+        return nil, fmt.Errorf("error reading directory: %w", err)
+    }
+
+    var result []string
+    for _, entry := range entries {
+        if entry.IsDir() {
+            continue
+        }
+
+        name := entry.Name()
+
+        if strings.HasSuffix(strings.ToLower(name), strings.ToLower(ext)) {
+            baseName := strings.TrimSuffix(name, ext)
+            result = append(result, baseName)
+        }
+    }
+
+    return result, nil
+}
+
+func openLog(path string) *os.File {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return f
+}
 
 func main() {
 	robinLog := openLog("out/robin.log")
 	defer robinLog.Close()
 
-	// Declare variables properly
 	platformsDir := "example/"
 	platforms, err := getFilesByExt(platformsDir, ".xml")
 	if err != nil {
