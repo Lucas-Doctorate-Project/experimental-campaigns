@@ -93,7 +93,7 @@ func main() {
 							"robin", "generate", expFile+".yaml",
 							"--output-dir=out/log/"+expFile,
 							"--batcmd=batsim -p "+platformPath+" -w "+workloadPath+" -e out/log/batsim_"+expFile+" --energy --environmental-footprint-dynamic "+tracePath,
-							"--schedcmd=batsched -v "+variant+" --variant_options_file "+vOptPath,
+							"--schedcmd=batsched -v "+variant+" --variant_options_filepath "+vOptPath,
 						)
 						generateCmd.Stdout = robinLog
 						generateCmd.Stderr = robinLog

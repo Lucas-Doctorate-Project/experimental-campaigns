@@ -8,6 +8,8 @@ The included `example/` directory contains an example scenario:
 - `workload.json`: the job stream Batsim replays.
 - `trace.csv`: a time series of carbon and water intensity values for zone `AS0`, fed to both Batsim (as a dynamic environmental footprint) and Batsched (as the intensity trace driving greenfilling decisions).
 
+The `variants/` directory is where all json configuration files for `batsched` is stored. Batsched uses them with the `--variant_options_filepath` parameter. It contains `config1.json` by default.
+
 ## Running
 
 The flake provides a dev shell with `go`, `batsim`, and `batsched` on the `PATH`. From the repository root:
