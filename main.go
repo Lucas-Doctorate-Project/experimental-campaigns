@@ -41,8 +41,6 @@ func openLog(path string) *os.File {
 }
 
 func main() {
-	robinLog := openLog("out/robin.log")
-	defer robinLog.Close()
 
 	platformsDir := "example/"
 	platforms, err := getFilesByExt(platformsDir, ".xml")
@@ -72,7 +70,14 @@ func main() {
 		return
 	}
 
-	variants := []string{"greenfilling", "fcfs", "saf"}
+	// Create output directory
+	err2 := os.MkdirAll("out", 0755)
+	if err2 != nil {
+		fmt.Printf("Error %v when attempting to create output directory\n", err)
+		return
+	}
+
+	variants := []string{"greenfilling", "fcfs", "energy_bf", "easy_bf"}
 
 	for _, variant := range variants {
 		for _, vOptions := range vOpts {
@@ -88,6 +93,9 @@ func main() {
 						tracePath := filepath.Join(tracesDir, traceFile+".csv")
 						vOptPath := filepath.Join(vOptDir, vOptions+".json")
 
+						robinLog := openLog("out/robin_" + expFile + ".log")
+						defer robinLog.Close()
+
 						// Generate YAML
 						generateCmd := exec.Command(
 							"robin", "generate", expFile+".yaml",
@@ -97,6 +105,7 @@ func main() {
 						)
 						generateCmd.Stdout = robinLog
 						generateCmd.Stderr = robinLog
+						defer os.Remove(expFile+".yaml")
 
 						if err := generateCmd.Run(); err != nil {
 							log.Printf("Error generating experiment %s: %v", expFile, err)
