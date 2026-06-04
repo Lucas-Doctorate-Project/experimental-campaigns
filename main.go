@@ -77,7 +77,7 @@ func main() {
 		return
 	}
 
-	variants := []string{"greenfilling", "fcfs", "energy_bf", "easy_bf"}
+	variants := []string{"greenfilling", "fcfs", "easy_bf"}
 
 	for _, variant := range variants {
 		for _, vOptions := range vOpts {
@@ -100,7 +100,7 @@ func main() {
 						generateCmd := exec.Command(
 							"robin", "generate", expFile+".yaml",
 							"--output-dir=out/log/"+expFile,
-							"--batcmd=batsim -p "+platformPath+" -w "+workloadPath+" -e out/log/batsim_"+expFile+" --energy --environmental-footprint-dynamic "+tracePath,
+							"--batcmd=batsim -p "+platformPath+" -w "+workloadPath+" -e out/log/"+expFile+"/batsim"+" --energy --environmental-footprint-dynamic "+tracePath,
 							"--schedcmd=batsched -v "+variant+" --variant_options_filepath "+vOptPath,
 						)
 						generateCmd.Stdout = robinLog
