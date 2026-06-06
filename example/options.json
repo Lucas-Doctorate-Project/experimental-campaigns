@@ -1,5 +1,5 @@
 {
-	"intensity_trace": "example/trace.csv",
+	"intensity_trace": "environmental.csv",
 	"intensity_zone": "AS0",
 	"smoothing_factor": 0.3,
 	"ema_threshold": 1.0,

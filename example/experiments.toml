@@ -1,0 +1,8 @@
+[[experiment]]
+
+name = "example-exp"
+workload = "example/workload.json"
+platform = "example/platform.xml"
+environmental_trace = "example/environmental.csv"
+variant_name = "greenfilling"
+variant_options = "example/options.json"
