@@ -7,11 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,7 +24,6 @@ import (
 // grace periods granted to the surviving process after the other exits
 // with a non-zero or zero status.
 type runOptions struct {
-	socket            string
 	simulationTimeout time.Duration
 	failureTimeout    time.Duration
 	successTimeout    time.Duration
@@ -60,19 +59,6 @@ func openFile(path string) *os.File {
 	}
 
 	return f
-}
-
-// socketInUse reports whether the TCP endpoint in addr is currently
-// bound. A "tcp://" prefix in addr is stripped. The check attempts a
-// bind and immediately closes on success.
-func socketInUse(addr string) bool {
-	hostPort := strings.TrimPrefix(addr, "tcp://")
-	ln, err := net.Listen("tcp", hostPort)
-	if err != nil {
-		return true
-	}
-	ln.Close()
-	return false
 }
 
 // killGroup terminates the process group led by cmd and any children
@@ -171,13 +157,9 @@ func waitWithTimeouts(batsched, batsim *exec.Cmd, opts runOptions) error {
 // to waitWithTimeouts. Returns nil only when both processes exit
 // cleanly.
 func runExperiment(exp Experiment, opts runOptions) error {
-	outputDir := exp.Name
+	outputDir := "out/"+exp.Name
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
-	}
-
-	if socketInUse(opts.socket) {
-		return fmt.Errorf("socket %s already in use (another batsim?)", opts.socket)
 	}
 
 	batschedLog := openFile(filepath.Join(outputDir, "batsched.log"))
@@ -192,6 +174,7 @@ func runExperiment(exp Experiment, opts runOptions) error {
 	batschedCmd := exec.Command("batsched",
 		"-v", exp.VariantName,
 		"--variant_options_filepath", exp.VariantOptions,
+		"--socket-endpoint", "ipc://socket_"+exp.Name,
 	)
 	batschedCmd.Stdout = batschedLog
 	batschedCmd.Stderr = batschedErr
@@ -200,13 +183,15 @@ func runExperiment(exp Experiment, opts runOptions) error {
 	batsimCmd := exec.Command("batsim",
 		"-p", exp.Platform,
 		"-w", exp.Workload,
-		"-e", filepath.Join(outputDir, "out"),
+		"-e", outputDir,
+		"--socket-endpoint", "ipc://socket_"+exp.Name,
 		"--energy",
 		"--environmental-footprint-dynamic", exp.EnvironmentalTrace,
 	)
 	batsimCmd.Stdout = batsimLog
 	batsimCmd.Stderr = batsimErr
 	batsimCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	defer os.Remove("socket_"+exp.Name)
 
 	if err := batschedCmd.Start(); err != nil {
 		return fmt.Errorf("starting batsched: %w", err)
@@ -224,15 +209,13 @@ func runExperiment(exp Experiment, opts runOptions) error {
 // experiment in sequence. A failed experiment does not abort the
 // campaign. Exits 0 only when every experiment succeeds, 1 otherwise.
 func main() {
-	campaignPath := flag.String("campaign", "example/experiments.toml", "Path to the campaign TOML file")
-	socket := flag.String("socket", "tcp://localhost:28000", "Batsim socket address")
+	campaignPath := flag.String("campaign", "experiments.toml", "Path to the campaign TOML file")
 	simulationTimeout := flag.Duration("simulation-timeout", time.Hour, "Maximum runtime for a single experiment")
 	failureTimeout := flag.Duration("failure-timeout", 30*time.Second, "Grace period for the surviving process after the other fails")
 	successTimeout := flag.Duration("success-timeout", 30*time.Second, "Grace period for the surviving process after the other succeeds")
 	flag.Parse()
 
 	opts := runOptions{
-		socket:            *socket,
 		simulationTimeout: *simulationTimeout,
 		failureTimeout:    *failureTimeout,
 		successTimeout:    *successTimeout,
@@ -243,16 +226,35 @@ func main() {
 		log.Fatal(err)
 	}
 
-	failed := 0
+	maxConcurrent := runtime.NumCPU() //4 // Or calculate from nproc
+	sem := make(chan struct{}, maxConcurrent)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failedCount := 0
+
 	for _, exp := range campaign.Experiments {
-		fmt.Printf("Running experiment: %s\n", exp.Name)
-		if err := runExperiment(exp, opts); err != nil {
-			fmt.Fprintf(os.Stderr, "experiment %q failed: %v\n", exp.Name, err)
-			failed++
+	    wg.Add(1)
+	    sem <- struct{}{} // Acquire slot
+	    
+	    go func(e Experiment) {
+		defer wg.Done()
+		defer func() { <-sem }() // Release slot
+		
+		fmt.Printf("Running experiment: %s\n", e.Name)
+		if err := runExperiment(e, opts); err != nil {
+		    fmt.Fprintf(os.Stderr, "experiment %q failed: %v\n", e.Name, err)
+		    
+		    mu.Lock()
+		    failedCount++
+		    mu.Unlock()
 		}
+	    }(exp)
 	}
 
-	if failed > 0 {
-		os.Exit(1)
+	wg.Wait() // Wait for all parallel jobs to finish
+
+	if failedCount > 0 {
+	    os.Exit(1)
 	}
 }
