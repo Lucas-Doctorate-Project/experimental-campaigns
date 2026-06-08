@@ -18,6 +18,36 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const (
+	// outputRootDir is the parent directory holding per-experiment output.
+	outputRootDir = "out"
+
+	// outputDirMode and logFileMode are the permissions used for created
+	// experiment directories and their append-only log files.
+	outputDirMode = 0o755
+	logFileMode   = 0o644
+
+	// killGracePeriod is the delay killGroup waits between SIGTERM and
+	// SIGKILL when terminating a process group.
+	killGracePeriod = 500 * time.Millisecond
+
+	// coRunningProcesses is the number of processes (batsched and batsim)
+	// launched together for each experiment.
+	coRunningProcesses = 2
+
+	// Default timeout policy applied when the corresponding flag is unset.
+	defaultSimulationTimeout = time.Hour
+	defaultFailureTimeout    = 30 * time.Second
+	defaultSuccessTimeout    = 30 * time.Second
+)
+
+// batschedProcess and batsimProcess name the two co-running executables.
+// They double as the result tags carried on processResult.
+const (
+	batschedProcess = "batsched"
+	batsimProcess   = "batsim"
+)
+
 // runOptions carries the execution policy shared by all experiments.
 // simulationTimeout caps the runtime of one experiment. failureTimeout
 // and successTimeout are the grace periods granted to the surviving
@@ -51,7 +81,7 @@ type Campaign struct {
 // openFile opens path for appending, creating it with mode 0644 if
 // absent. The caller closes the file.
 func openFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +98,7 @@ func killGroup(cmd *exec.Cmd) {
 	}
 	pgid := cmd.Process.Pid
 	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(killGracePeriod)
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
@@ -84,15 +114,15 @@ func waitForResults(results <-chan processResult, opts runOptions, kill func()) 
 	defer simTimer.Stop()
 
 	var batschedErr, batsimErr error
-	remaining := 2
+	remaining := coRunningProcesses
 	var crossTimer *time.Timer
 	var crossTimerC <-chan time.Time
 
 	recordResult := func(result processResult) {
 		switch result.name {
-		case "batsched":
+		case batschedProcess:
 			batschedErr = result.err
-		case "batsim":
+		case batsimProcess:
 			batsimErr = result.err
 		}
 
@@ -152,9 +182,9 @@ func waitForResults(results <-chan processResult, opts runOptions, kill func()) 
 // drains the pending Wait calls. The function returns nil only when
 // both processes exit cleanly.
 func waitWithTimeouts(batsched, batsim *exec.Cmd, opts runOptions) error {
-	results := make(chan processResult, 2)
-	go func() { results <- processResult{name: "batsched", err: batsched.Wait()} }()
-	go func() { results <- processResult{name: "batsim", err: batsim.Wait()} }()
+	results := make(chan processResult, coRunningProcesses)
+	go func() { results <- processResult{name: batschedProcess, err: batsched.Wait()} }()
+	go func() { results <- processResult{name: batsimProcess, err: batsim.Wait()} }()
 
 	batschedErr, batsimErr, err := waitForResults(results, opts, func() {
 		killGroup(batsched)
@@ -212,8 +242,8 @@ func validateCampaign(campaign Campaign) error {
 // groups and delegates to waitWithTimeouts. Returns nil only when both
 // processes exit cleanly.
 func runExperiment(exp Experiment, opts runOptions) error {
-	outputDir := "out/" + exp.Name
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	outputDir := filepath.Join(outputRootDir, exp.Name)
+	if err := os.MkdirAll(outputDir, outputDirMode); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
 
@@ -244,7 +274,7 @@ func runExperiment(exp Experiment, opts runOptions) error {
 	}
 	defer cleanupSocket()
 
-	batschedCmd := exec.Command("batsched",
+	batschedCmd := exec.Command(batschedProcess,
 		"-v", exp.VariantName,
 		"--variant_options_filepath", exp.VariantOptions,
 		"--socket-endpoint", socketEndpoint,
@@ -253,7 +283,7 @@ func runExperiment(exp Experiment, opts runOptions) error {
 	batschedCmd.Stderr = batschedErr
 	batschedCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	batsimCmd := exec.Command("batsim",
+	batsimCmd := exec.Command(batsimProcess,
 		"-p", exp.Platform,
 		"-w", exp.Workload,
 		"-e", outputDir,
@@ -283,9 +313,9 @@ func runExperiment(exp Experiment, opts runOptions) error {
 // experiment succeeds, 1 otherwise.
 func main() {
 	campaignPath := flag.String("campaign", "experiments.toml", "Path to the campaign TOML file")
-	simulationTimeout := flag.Duration("simulation-timeout", time.Hour, "Maximum runtime for a single experiment")
-	failureTimeout := flag.Duration("failure-timeout", 30*time.Second, "Grace period for the surviving process after the other fails")
-	successTimeout := flag.Duration("success-timeout", 30*time.Second, "Grace period for the surviving process after the other succeeds")
+	simulationTimeout := flag.Duration("simulation-timeout", defaultSimulationTimeout, "Maximum runtime for a single experiment")
+	failureTimeout := flag.Duration("failure-timeout", defaultFailureTimeout, "Grace period for the surviving process after the other fails")
+	successTimeout := flag.Duration("success-timeout", defaultSuccessTimeout, "Grace period for the surviving process after the other succeeds")
 	flag.Parse()
 
 	opts := runOptions{
