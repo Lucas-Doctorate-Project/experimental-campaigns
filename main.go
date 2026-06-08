@@ -121,33 +121,44 @@ type processResult struct {
 	err  error
 }
 
+// experimentResult holds the exit error of each co-running process. A
+// nil field means that process exited cleanly.
+type experimentResult struct {
+	batschedErr error
+	batsimErr   error
+}
+
 // waitForResults applies the timeout policy to process results emitted
-// by wait goroutines. kill is called when a timeout fires.
-func waitForResults(results <-chan processResult, opts runOptions, kill func()) (error, error, error) {
+// by wait goroutines. kill is called when a timeout fires. The returned
+// error is non-nil only for a timeout, not for a process exit error.
+func waitForResults(results <-chan processResult, opts runOptions, kill func()) (experimentResult, error) {
 	simTimer := time.NewTimer(opts.simulationTimeout)
 	defer simTimer.Stop()
 
-	var batschedErr, batsimErr error
+	var result experimentResult
 	remaining := coRunningProcesses
-	var crossTimer *time.Timer
-	var crossTimerC <-chan time.Time
 
-	recordResult := func(result processResult) {
-		switch result.name {
+	// graceTimer arms once a single process is left, bounding how long we
+	// wait for it before killing both groups.
+	var graceTimer *time.Timer
+	var graceTimerC <-chan time.Time
+
+	recordResult := func(r processResult) {
+		switch r.name {
 		case batschedProcess:
-			batschedErr = result.err
+			result.batschedErr = r.err
 		case batsimProcess:
-			batsimErr = result.err
+			result.batsimErr = r.err
 		}
 
 		remaining--
-		if remaining == 1 && crossTimer == nil {
-			d := opts.successTimeout
-			if result.err != nil {
-				d = opts.failureTimeout
+		if remaining == coRunningProcesses-1 && graceTimer == nil {
+			graceDuration := opts.successTimeout
+			if r.err != nil {
+				graceDuration = opts.failureTimeout
 			}
-			crossTimer = time.NewTimer(d)
-			crossTimerC = crossTimer.C
+			graceTimer = time.NewTimer(graceDuration)
+			graceTimerC = graceTimer.C
 		}
 	}
 
@@ -157,36 +168,38 @@ func waitForResults(results <-chan processResult, opts runOptions, kill func()) 
 		}
 	}
 
+	stopGraceTimer := func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+		}
+	}
+
 	for remaining > 0 {
 		select {
-		case result := <-results:
-			recordResult(result)
+		case r := <-results:
+			recordResult(r)
 		case <-simTimer.C:
 			kill()
 			drainResults()
-			if crossTimer != nil {
-				crossTimer.Stop()
-			}
-			return nil, nil, fmt.Errorf("simulation timeout exceeded (%s)", opts.simulationTimeout)
-		case <-crossTimerC:
+			stopGraceTimer()
+			return experimentResult{}, fmt.Errorf("simulation timeout exceeded (%s)", opts.simulationTimeout)
+		case <-graceTimerC:
+			// A buffered final result can race the grace timer; prefer it.
 			select {
-			case result := <-results:
-				recordResult(result)
+			case r := <-results:
+				recordResult(r)
 				continue
 			default:
 			}
 
 			kill()
 			drainResults()
-			return nil, nil, fmt.Errorf("other process did not finish within grace period")
+			return experimentResult{}, fmt.Errorf("other process did not finish within grace period")
 		}
 	}
 
-	if crossTimer != nil {
-		crossTimer.Stop()
-	}
-
-	return batschedErr, batsimErr, nil
+	stopGraceTimer()
+	return result, nil
 }
 
 // waitWithTimeouts waits for both processes to exit under the policy in
@@ -200,15 +213,15 @@ func waitWithTimeouts(batsched, batsim *exec.Cmd, opts runOptions) error {
 	go func() { results <- processResult{name: batschedProcess, err: batsched.Wait()} }()
 	go func() { results <- processResult{name: batsimProcess, err: batsim.Wait()} }()
 
-	batschedErr, batsimErr, err := waitForResults(results, opts, func() {
+	result, err := waitForResults(results, opts, func() {
 		killGroup(batsched)
 		killGroup(batsim)
 	})
 	if err != nil {
 		return err
 	}
-	if batschedErr != nil || batsimErr != nil {
-		return fmt.Errorf("batsched=%v batsim=%v", batschedErr, batsimErr)
+	if result.batschedErr != nil || result.batsimErr != nil {
+		return fmt.Errorf("batsched=%v batsim=%v", result.batschedErr, result.batsimErr)
 	}
 	return nil
 }

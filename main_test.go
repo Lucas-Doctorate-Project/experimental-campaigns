@@ -57,12 +57,12 @@ func TestWaitForResultsDoesNotTreatBufferedExitAsGraceTimeout(t *testing.T) {
 		results <- processResult{name: "batsched", err: nil}
 		results <- processResult{name: "batsim", err: nil}
 
-		batschedErr, batsimErr, err := waitForResults(results, opts, func() {})
+		result, err := waitForResults(results, opts, func() {})
 		if err != nil {
 			t.Fatalf("iteration %d: waitForResults returned error: %v", i, err)
 		}
-		if batschedErr != nil || batsimErr != nil {
-			t.Fatalf("iteration %d: unexpected process errors: batsched=%v batsim=%v", i, batschedErr, batsimErr)
+		if result.batschedErr != nil || result.batsimErr != nil {
+			t.Fatalf("iteration %d: unexpected process errors: batsched=%v batsim=%v", i, result.batschedErr, result.batsimErr)
 		}
 	}
 }
