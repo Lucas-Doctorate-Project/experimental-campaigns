@@ -19,10 +19,9 @@ import (
 )
 
 // runOptions carries the execution policy shared by all experiments.
-// socket is the address batsim must bind. simulationTimeout caps the
-// runtime of one experiment. failureTimeout and successTimeout are the
-// grace periods granted to the surviving process after the other exits
-// with a non-zero or zero status.
+// simulationTimeout caps the runtime of one experiment. failureTimeout
+// and successTimeout are the grace periods granted to the surviving
+// process after the other exits with a non-zero or zero status.
 type runOptions struct {
 	simulationTimeout time.Duration
 	failureTimeout    time.Duration
@@ -43,22 +42,20 @@ type Experiment struct {
 	VariantOptions     string `toml:"variant_options"`
 }
 
-// Campaign is the top-level TOML structure, an ordered list of experiments
-// executed sequentially.
+// Campaign is the top-level TOML structure, an ordered list of
+// experiments.
 type Campaign struct {
 	Experiments []Experiment `toml:"experiment"`
 }
 
 // openFile opens path for appending, creating it with mode 0644 if
-// absent. It calls log.Fatal on failure. The caller closes the file.
-func openFile(path string) *os.File {
+// absent. The caller closes the file.
+func openFile(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-
-	return f
+	return f, nil
 }
 
 // killGroup terminates the process group led by cmd and any children
@@ -75,6 +72,79 @@ func killGroup(cmd *exec.Cmd) {
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
+type processResult struct {
+	name string
+	err  error
+}
+
+// waitForResults applies the timeout policy to process results emitted
+// by wait goroutines. kill is called when a timeout fires.
+func waitForResults(results <-chan processResult, opts runOptions, kill func()) (error, error, error) {
+	simTimer := time.NewTimer(opts.simulationTimeout)
+	defer simTimer.Stop()
+
+	var batschedErr, batsimErr error
+	remaining := 2
+	var crossTimer *time.Timer
+	var crossTimerC <-chan time.Time
+
+	recordResult := func(result processResult) {
+		switch result.name {
+		case "batsched":
+			batschedErr = result.err
+		case "batsim":
+			batsimErr = result.err
+		}
+
+		remaining--
+		if remaining == 1 && crossTimer == nil {
+			d := opts.successTimeout
+			if result.err != nil {
+				d = opts.failureTimeout
+			}
+			crossTimer = time.NewTimer(d)
+			crossTimerC = crossTimer.C
+		}
+	}
+
+	drainResults := func() {
+		for remaining > 0 {
+			recordResult(<-results)
+		}
+	}
+
+	for remaining > 0 {
+		select {
+		case result := <-results:
+			recordResult(result)
+		case <-simTimer.C:
+			kill()
+			drainResults()
+			if crossTimer != nil {
+				crossTimer.Stop()
+			}
+			return nil, nil, fmt.Errorf("simulation timeout exceeded (%s)", opts.simulationTimeout)
+		case <-crossTimerC:
+			select {
+			case result := <-results:
+				recordResult(result)
+				continue
+			default:
+			}
+
+			kill()
+			drainResults()
+			return nil, nil, fmt.Errorf("other process did not finish within grace period")
+		}
+	}
+
+	if crossTimer != nil {
+		crossTimer.Stop()
+	}
+
+	return batschedErr, batsimErr, nil
+}
+
 // waitWithTimeouts waits for both processes to exit under the policy in
 // opts. A simulation timer runs from entry. When the first process
 // exits, a second timer arms for successTimeout or failureTimeout
@@ -82,68 +152,16 @@ func killGroup(cmd *exec.Cmd) {
 // drains the pending Wait calls. The function returns nil only when
 // both processes exit cleanly.
 func waitWithTimeouts(batsched, batsim *exec.Cmd, opts runOptions) error {
-	batschedDone := make(chan error, 1)
-	batsimDone := make(chan error, 1)
-	go func() { batschedDone <- batsched.Wait() }()
-	go func() { batsimDone <- batsim.Wait() }()
+	results := make(chan processResult, 2)
+	go func() { results <- processResult{name: "batsched", err: batsched.Wait()} }()
+	go func() { results <- processResult{name: "batsim", err: batsim.Wait()} }()
 
-	simTimer := time.NewTimer(opts.simulationTimeout)
-	defer simTimer.Stop()
-
-	var batschedErr, batsimErr error
-	var batschedDoneFlag, batsimDoneFlag bool
-	var crossTimer *time.Timer
-	var crossTimerC <-chan time.Time
-
-	for !batschedDoneFlag || !batsimDoneFlag {
-		if batschedDoneFlag != batsimDoneFlag && crossTimer == nil {
-			firstErr := batschedErr
-			if batsimDoneFlag {
-				firstErr = batsimErr
-			}
-			d := opts.successTimeout
-			if firstErr != nil {
-				d = opts.failureTimeout
-			}
-			crossTimer = time.NewTimer(d)
-			crossTimerC = crossTimer.C
-		}
-
-		select {
-		case err := <-batschedDone:
-			batschedErr = err
-			batschedDoneFlag = true
-		case err := <-batsimDone:
-			batsimErr = err
-			batsimDoneFlag = true
-		case <-simTimer.C:
-			killGroup(batsched)
-			killGroup(batsim)
-			if !batschedDoneFlag {
-				<-batschedDone
-			}
-			if !batsimDoneFlag {
-				<-batsimDone
-			}
-			if crossTimer != nil {
-				crossTimer.Stop()
-			}
-			return fmt.Errorf("simulation timeout exceeded (%s)", opts.simulationTimeout)
-		case <-crossTimerC:
-			killGroup(batsched)
-			killGroup(batsim)
-			if !batschedDoneFlag {
-				<-batschedDone
-			}
-			if !batsimDoneFlag {
-				<-batsimDone
-			}
-			return fmt.Errorf("other process did not finish within grace period")
-		}
-	}
-
-	if crossTimer != nil {
-		crossTimer.Stop()
+	batschedErr, batsimErr, err := waitForResults(results, opts, func() {
+		killGroup(batsched)
+		killGroup(batsim)
+	})
+	if err != nil {
+		return err
 	}
 	if batschedErr != nil || batsimErr != nil {
 		return fmt.Errorf("batsched=%v batsim=%v", batschedErr, batsimErr)
@@ -151,30 +169,85 @@ func waitWithTimeouts(batsched, batsim *exec.Cmd, opts runOptions) error {
 	return nil
 }
 
+// createSocketEndpoint allocates a unique IPC endpoint for one
+// experiment run and returns a cleanup function for the temporary
+// directory that contains it.
+func createSocketEndpoint() (string, func(), error) {
+	socketDir, err := os.MkdirTemp("", "experimental-campaigns-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating socket dir: %w", err)
+	}
+
+	socketPath := filepath.Join(socketDir, "socket")
+	cleanup := func() {
+		_ = os.Remove(socketPath)
+		_ = os.RemoveAll(socketDir)
+	}
+
+	return "ipc://" + socketPath, cleanup, nil
+}
+
+// validateCampaign rejects duplicate experiment names because the
+// runner uses them as output directory names.
+func validateCampaign(campaign Campaign) error {
+	names := make(map[string]struct{}, len(campaign.Experiments))
+	for i, exp := range campaign.Experiments {
+		if exp.Name == "" {
+			return fmt.Errorf("experiment %d has an empty name", i+1)
+		}
+
+		if _, exists := names[exp.Name]; exists {
+			return fmt.Errorf("duplicate experiment name %q", exp.Name)
+		}
+
+		names[exp.Name] = struct{}{}
+	}
+
+	return nil
+}
+
 // runExperiment executes one experiment under opts. It creates
-// exp.Name, checks opts.socket is free, opens the four log files, then
-// starts batsched and batsim in their own process groups and delegates
-// to waitWithTimeouts. Returns nil only when both processes exit
-// cleanly.
+// out/<name>, opens the four log files, allocates a unique IPC
+// endpoint, then starts batsched and batsim in their own process
+// groups and delegates to waitWithTimeouts. Returns nil only when both
+// processes exit cleanly.
 func runExperiment(exp Experiment, opts runOptions) error {
-	outputDir := "out/"+exp.Name
+	outputDir := "out/" + exp.Name
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
 
-	batschedLog := openFile(filepath.Join(outputDir, "batsched.log"))
+	batschedLog, err := openFile(filepath.Join(outputDir, "batsched.log"))
+	if err != nil {
+		return fmt.Errorf("opening batsched.log: %w", err)
+	}
 	defer batschedLog.Close()
-	batschedErr := openFile(filepath.Join(outputDir, "batsched.err"))
+	batschedErr, err := openFile(filepath.Join(outputDir, "batsched.err"))
+	if err != nil {
+		return fmt.Errorf("opening batsched.err: %w", err)
+	}
 	defer batschedErr.Close()
-	batsimLog := openFile(filepath.Join(outputDir, "batsim.log"))
+	batsimLog, err := openFile(filepath.Join(outputDir, "batsim.log"))
+	if err != nil {
+		return fmt.Errorf("opening batsim.log: %w", err)
+	}
 	defer batsimLog.Close()
-	batsimErr := openFile(filepath.Join(outputDir, "batsim.err"))
+	batsimErr, err := openFile(filepath.Join(outputDir, "batsim.err"))
+	if err != nil {
+		return fmt.Errorf("opening batsim.err: %w", err)
+	}
 	defer batsimErr.Close()
+
+	socketEndpoint, cleanupSocket, err := createSocketEndpoint()
+	if err != nil {
+		return err
+	}
+	defer cleanupSocket()
 
 	batschedCmd := exec.Command("batsched",
 		"-v", exp.VariantName,
 		"--variant_options_filepath", exp.VariantOptions,
-		"--socket-endpoint", "ipc://socket_"+exp.Name,
+		"--socket-endpoint", socketEndpoint,
 	)
 	batschedCmd.Stdout = batschedLog
 	batschedCmd.Stderr = batschedErr
@@ -184,14 +257,13 @@ func runExperiment(exp Experiment, opts runOptions) error {
 		"-p", exp.Platform,
 		"-w", exp.Workload,
 		"-e", outputDir,
-		"--socket-endpoint", "ipc://socket_"+exp.Name,
+		"--socket-endpoint", socketEndpoint,
 		"--energy",
 		"--environmental-footprint-dynamic", exp.EnvironmentalTrace,
 	)
 	batsimCmd.Stdout = batsimLog
 	batsimCmd.Stderr = batsimErr
 	batsimCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	defer os.Remove("socket_"+exp.Name)
 
 	if err := batschedCmd.Start(); err != nil {
 		return fmt.Errorf("starting batsched: %w", err)
@@ -205,9 +277,10 @@ func runExperiment(exp Experiment, opts runOptions) error {
 	return waitWithTimeouts(batschedCmd, batsimCmd, opts)
 }
 
-// main parses flags, decodes the campaign TOML, and runs each
-// experiment in sequence. A failed experiment does not abort the
-// campaign. Exits 0 only when every experiment succeeds, 1 otherwise.
+// main parses flags, decodes the campaign TOML, validates experiment
+// names, and runs the experiments with bounded parallelism. A failed
+// experiment does not abort the campaign. Exits 0 only when every
+// experiment succeeds, 1 otherwise.
 func main() {
 	campaignPath := flag.String("campaign", "experiments.toml", "Path to the campaign TOML file")
 	simulationTimeout := flag.Duration("simulation-timeout", time.Hour, "Maximum runtime for a single experiment")
@@ -225,8 +298,11 @@ func main() {
 	if _, err := toml.DecodeFile(*campaignPath, &campaign); err != nil {
 		log.Fatal(err)
 	}
+	if err := validateCampaign(campaign); err != nil {
+		log.Fatal(err)
+	}
 
-	maxConcurrent := runtime.NumCPU() //4 // Or calculate from nproc
+	maxConcurrent := runtime.NumCPU()
 	sem := make(chan struct{}, maxConcurrent)
 
 	var wg sync.WaitGroup
@@ -234,27 +310,27 @@ func main() {
 	failedCount := 0
 
 	for _, exp := range campaign.Experiments {
-	    wg.Add(1)
-	    sem <- struct{}{} // Acquire slot
-	    
-	    go func(e Experiment) {
-		defer wg.Done()
-		defer func() { <-sem }() // Release slot
-		
-		fmt.Printf("Running experiment: %s\n", e.Name)
-		if err := runExperiment(e, opts); err != nil {
-		    fmt.Fprintf(os.Stderr, "experiment %q failed: %v\n", e.Name, err)
-		    
-		    mu.Lock()
-		    failedCount++
-		    mu.Unlock()
-		}
-	    }(exp)
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(e Experiment) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			fmt.Printf("Running experiment: %s\n", e.Name)
+			if err := runExperiment(e, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "experiment %q failed: %v\n", e.Name, err)
+
+				mu.Lock()
+				failedCount++
+				mu.Unlock()
+			}
+		}(exp)
 	}
 
-	wg.Wait() // Wait for all parallel jobs to finish
+	wg.Wait()
 
 	if failedCount > 0 {
-	    os.Exit(1)
+		os.Exit(1)
 	}
 }
