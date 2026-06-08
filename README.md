@@ -29,14 +29,16 @@ variant_options = "example/options.json"
 
 Fields.
 
-- `name`: output directory for the experiment artifacts. Created if absent.
+- `name`: output directory name for the experiment artifacts under `out/`. Created if absent.
 - `workload`: path to the Batsim workload JSON.
 - `platform`: path to the SimGrid platform XML.
 - `environmental_trace`: path passed to Batsim as `--environmental-footprint-dynamic`.
 - `variant_name`: Batsched variant, passed as `-v`.
 - `variant_options`: path passed to Batsched as `--variant_options_filepath`.
 
-Paths are resolved by the OS, so use absolute paths or paths relative to the directory you run the binary from. Append more `[[experiment]]` tables to add experiments. They run sequentially in declaration order.
+Paths are resolved by the OS, so use absolute paths or paths relative to the directory you run the binary from. Append more `[[experiment]]` tables to add experiments.
+
+Experiment names must be unique within one campaign. The runner uses `name` for the output directory under `out/`.
 
 ## Declare variant options
 
@@ -65,20 +67,19 @@ Flags.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--campaign` | `example/experiments.toml` | Path to the campaign TOML file. |
-| `--socket` | `tcp://localhost:28000` | Address Batsim is expected to bind. |
+| `--campaign` | `experiments.toml` | Path to the campaign TOML file. |
 | `--simulation-timeout` | `1h` | Max wall-clock time per experiment. |
 | `--failure-timeout` | `30s` | Grace period after the other process fails. |
 | `--success-timeout` | `30s` | Grace period after the other process exits cleanly. |
 
-The runner exits `0` only when every experiment succeeds. A failure does not interrupt the remaining experiments, the program exits `1` at the end. The runner refuses to start an experiment if `--socket` is already bound.
+The runner launches experiments in declaration order, with up to `runtime.NumCPU()` experiments running at once. Each experiment gets its own temporary IPC socket endpoint. The runner exits `0` only when every experiment succeeds. A failure does not interrupt the remaining experiments, the program exits `1` at the end.
 
 ## Inspect the output
 
 For an experiment named `example-exp`.
 
-- `example-exp/batsched.log`, `example-exp/batsched.err`: Batsched stdout and stderr.
-- `example-exp/batsim.log`, `example-exp/batsim.err`: Batsim stdout and stderr.
-- `example-exp/out_*.csv`: Batsim exports, prefixed `out`. Main ones are `out_jobs.csv` (per-job metrics) and `out_schedule.csv` (run aggregates).
+- `out/example-exp/batsched.log`, `out/example-exp/batsched.err`: Batsched stdout and stderr.
+- `out/example-exp/batsim.log`, `out/example-exp/batsim.err`: Batsim stdout and stderr.
+- `out/example-exp/out_*.csv`: Batsim exports. Main ones are `out_jobs.csv` (per-job metrics) and `out_schedule.csv` (run aggregates).
 
 Log files are opened in append mode. Delete the directory between runs for a clean slate.
