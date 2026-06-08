@@ -1,93 +1,45 @@
 #!/bin/bash
 
-# === CONFIGURAÇÃO GERAL ===
+# === CONFIGURATION PARAMETERS ===
 NPROC=$(($(nproc) / 2))
 if [ "${NPROC}" -le 0 ]; then
     NPROC=1
 fi
 
-PLATFORMS_DIR="platforms"
-WORKLOADS_DIR="workloads"
-TRACES_DIR="traces"
 OUTPUT_DIR="out"
-VOPTS_DIR="vopts"
-TOML_FILE="experiments.toml"
+
+if [ ${#} -le 0 ]; then
+	echo "ERROR: missing argument: .toml experiments file to be used."
+	echo "Syntax: ${0} [file]"
+	exit 1
+fi
+
+TOML_FILE=${1}
 
 mkdir -p "${OUTPUT_DIR}"
 
-# === FUNÇÃO PARA LER O TOML ===
-# Usa python3 com tomllib (Python 3.11+) ou 'toml' package
-read_toml_experiments() {
-    python3 << PYTHON_SCRIPT
-import sys
-import json
-try:
-    import tomllib
-except ImportError:
-    try:
-        import toml as tomllib
-    except ImportError:
-        print("Erro: python-3.11+ necessário ou pacote 'pip install toml'", file=sys.stderr)
-        sys.exit(1)
-
-config_file = "${TOML_FILE}"
-
-try:
-    with open(config_file, "rb") as f:
-        data = tomllib.load(f)
-except FileNotFoundError:
-    print(f"Erro: Arquivo {config_file} não encontrado.", file=sys.stderr)
-    sys.exit(1)
-
-for exp in data.get("experiment", []):
-    # Formato: ID<TAB>VARIANT<TAB>PLATFORM<TAB>WORKLOAD<TAB>TRACE<TAB>VOPTS
-    
-    # Suporta string única ou lista
-    name = exp.get("name", "")
-    platform = exp.get("platform", "")
-    workload = exp.get("workload", "")
-    trace = exp.get("environmental_trace", "")
-    variant = exp.get("variant_name", "")
-    vopts = exp.get("variant_options", "")
-    
-    # Garante arrays se necessário
-    if isinstance(name, list): name = ",".join(name)
-    if isinstance(platform, list): platform = ",".join(platform)
-    if isinstance(workload, list): workload = ",".join(workload)
-    if isinstance(trace, list): trace = ",".join(trace)
-    if isinstance(variant, list): variant = ",".join(variant)
-    if isinstance(vopts, list): vopts = ",".join(vopts)
-    
-    # Imprime separando por tab (\t)
-    print(f"{name}\t{variant}\t{platform}\t{workload}\t{trace}\t{vopts}")
-PYTHON_SCRIPT
-}
-
-# === LOOP PRINCIPAL ===
+# === MAIN LOOP ===
 echo "Parsing experiments data from ${TOML_FILE}..."
 ITERATOR=0
 
-# Lê o output do Python linha por linha
+# Reads the output of parse_toml.py line by line
 while IFS=$'\t' read -r NAME VARIANT PLATFORM WORKLOAD TRACE VOPTS; do
-    # Pulsa linhas vazias
-    [ -z "${NAME}" ] && continue
     
-    # Resolve paths absolutos (CRÍTICO para evitar erros de arquivo não encontrado)
-    # Remove espaços extras e converte para absoluto
+    # Resolves absolute paths and skips iteration if any file is not found
     FULL_PLATFORM=$(realpath "${PLATFORM}" 2>/dev/null || echo "${PLATFORM}")
     FULL_WORKLOAD=$(realpath "${WORKLOAD}" 2>/dev/null || echo "${WORKLOAD}")
     FULL_TRACE=$(realpath "${TRACE}" 2>/dev/null || echo "${TRACE}")
     FULL_VOPTS=$(realpath "${VOPTS}" 2>/dev/null || echo "${VOPTS}")
     
-    # Validação básica
     for FILENAME in ${FULL_PLATFORM} ${FULL_WORKLOAD} ${FULL_TRACE} ${FULL_VOPTS}; do
         if [ ! -f "${FILENAME}" ]; then
             echo "[${NAME}] WARNING: file ${FILENAME} not found. Skipping."
             continue
         fi
     done
+    # End of file name validation
     
-    # Contagem de jobs ativos (Lógica de Limite)
+    # Checks if the number of child jobs does not surpass the number of threads we want to be used 
     while [ $(jobs -r | wc -l) -ge "${NPROC}" ]; do
         sleep 1
     done
@@ -96,7 +48,6 @@ while IFS=$'\t' read -r NAME VARIANT PLATFORM WORKLOAD TRACE VOPTS; do
     
     echo "[${NAME}] Variant: ${VARIANT} | Platform: ${PLATFORM} | Workload: ${WORKLOAD} | Trace: ${TRACE} | Vopts: ${VOPTS}"
     
-    # Execução (Subshell agrupa commands para controle de job)
     (
         batsim -p "${FULL_PLATFORM}" \
                -w "${FULL_WORKLOAD}" \
@@ -107,14 +58,6 @@ while IFS=$'\t' read -r NAME VARIANT PLATFORM WORKLOAD TRACE VOPTS; do
 	       echo "[${ITERATOR}] Batsim finished successfuly." ||
 	       echo "[${ITERATOR}] ERROR: BATSIM finished forcefully." && exit &
 
-	#BATSCHED_PID=$!
-
-        # 3. AGUARDA AMBOS TERMINAREM DENTRO DO SUBSHELL
-        #wait $BATSIM_PID
-        #EXIT_SIM=$?
-        
-        # Espera batsim terminar antes de iniciar batsched se compartilharem socket?
-        # No seu script original eram paralelos. Aqui mantemos paralelo mas no mesmo grupo.
         batsched -v "${VARIANT}" \
                  --variant_options_filepath="${FULL_VOPTS}" \
                  --socket-endpoint="ipc://socket_${NAME}" &> "${OUTPUT_DIR}/batsched_${NAME}" &&
@@ -124,12 +67,11 @@ while IFS=$'\t' read -r NAME VARIANT PLATFORM WORKLOAD TRACE VOPTS; do
         wait
     ) &
     
-done < <(read_toml_experiments)
+done < <(eval "python3 parse_toml.py ${TOML_FILE}")
 
 
-#while [ $(jobs -r | wc -l) -gt 0 ]; do
-#	sleep 2
-#done
 wait
 rm socket_*
 echo "All jobs finished"
+
+exit 0
