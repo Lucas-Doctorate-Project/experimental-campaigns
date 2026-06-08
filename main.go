@@ -78,14 +78,28 @@ type Campaign struct {
 	Experiments []Experiment `toml:"experiment"`
 }
 
-// openFile opens path for appending, creating it with mode 0644 if
-// absent. The caller closes the file.
-func openFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
+// openAppendFile opens path for appending, creating it with logFileMode
+// if absent. The caller closes the file.
+func openAppendFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
+}
+
+// openProcessLogs opens the stdout (.log) and stderr (.err) destinations
+// for the named process inside dir. On failure it closes any file it
+// already opened so the caller never leaks a descriptor.
+func openProcessLogs(dir, name string) (stdout, stderr *os.File, err error) {
+	stdout, err = openAppendFile(filepath.Join(dir, name+".log"))
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("opening %s.log: %w", name, err)
 	}
-	return f, nil
+
+	stderr, err = openAppendFile(filepath.Join(dir, name+".err"))
+	if err != nil {
+		stdout.Close()
+		return nil, nil, fmt.Errorf("opening %s.err: %w", name, err)
+	}
+
+	return stdout, stderr, nil
 }
 
 // killGroup terminates the process group led by cmd and any children
@@ -247,26 +261,19 @@ func runExperiment(exp Experiment, opts runOptions) error {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
 
-	batschedLog, err := openFile(filepath.Join(outputDir, "batsched.log"))
+	batschedOut, batschedErrLog, err := openProcessLogs(outputDir, batschedProcess)
 	if err != nil {
-		return fmt.Errorf("opening batsched.log: %w", err)
+		return err
 	}
-	defer batschedLog.Close()
-	batschedErr, err := openFile(filepath.Join(outputDir, "batsched.err"))
+	defer batschedOut.Close()
+	defer batschedErrLog.Close()
+
+	batsimOut, batsimErrLog, err := openProcessLogs(outputDir, batsimProcess)
 	if err != nil {
-		return fmt.Errorf("opening batsched.err: %w", err)
+		return err
 	}
-	defer batschedErr.Close()
-	batsimLog, err := openFile(filepath.Join(outputDir, "batsim.log"))
-	if err != nil {
-		return fmt.Errorf("opening batsim.log: %w", err)
-	}
-	defer batsimLog.Close()
-	batsimErr, err := openFile(filepath.Join(outputDir, "batsim.err"))
-	if err != nil {
-		return fmt.Errorf("opening batsim.err: %w", err)
-	}
-	defer batsimErr.Close()
+	defer batsimOut.Close()
+	defer batsimErrLog.Close()
 
 	socketEndpoint, cleanupSocket, err := createSocketEndpoint()
 	if err != nil {
@@ -279,8 +286,8 @@ func runExperiment(exp Experiment, opts runOptions) error {
 		"--variant_options_filepath", exp.VariantOptions,
 		"--socket-endpoint", socketEndpoint,
 	)
-	batschedCmd.Stdout = batschedLog
-	batschedCmd.Stderr = batschedErr
+	batschedCmd.Stdout = batschedOut
+	batschedCmd.Stderr = batschedErrLog
 	batschedCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	batsimCmd := exec.Command(batsimProcess,
@@ -291,8 +298,8 @@ func runExperiment(exp Experiment, opts runOptions) error {
 		"--energy",
 		"--environmental-footprint-dynamic", exp.EnvironmentalTrace,
 	)
-	batsimCmd.Stdout = batsimLog
-	batsimCmd.Stderr = batsimErr
+	batsimCmd.Stdout = batsimOut
+	batsimCmd.Stderr = batsimErrLog
 	batsimCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := batschedCmd.Start(); err != nil {
