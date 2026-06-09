@@ -2,6 +2,8 @@
 
 Runner for campaigns of Batsim simulations driven by the Batsched scheduler. Each experiment launches Batsim and Batsched as a pair of co-running processes wired over a ZMQ socket. The runner captures their logs, enforces timeouts, and writes artifacts into a per-experiment directory.
 
+The bash-based implementation now lives in [`bash/`](bash/). See [`bash/README.md`](bash/README.md) for its layout and usage.
+
 ## Set up the dev shell
 
 The flake provides `go`, `batsim`, and `batsched` on the `PATH`.

@@ -1,6 +1,8 @@
 #!/bin/bash
 trap "kill 0" SIGINT
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
 # === CONFIGURATION PARAMETERS ===
 NPROC=$(($(nproc)))
 if [ "${NPROC}" -le 0 ]; then
@@ -77,7 +79,7 @@ while IFS=$'\t' read -r NAME VARIANT PLATFORM WORKLOAD TRACE VOPTS; do
 	wait %1 || echo "ERROR: Experiment ${NAME} failed or timed out." && kill %2 && kill %1
     ) &
     
-done < <(eval "python3 parse_toml.py ${TOML_FILE}")
+done < <(python3 "${SCRIPT_DIR}/parse_toml.py" "${TOML_FILE}")
 
 
 wait

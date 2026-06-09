@@ -1,4 +1,4 @@
-module greenfilling
+module experimental-campaigns
 
 go 1.26.3
 
