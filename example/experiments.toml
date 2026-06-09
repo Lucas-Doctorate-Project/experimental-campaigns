@@ -1,6 +1,25 @@
 [[experiment]]
 
-name = "example-exp"
+name = "example-1"
+workload = "example/workload.json"
+platform = "example/platform.xml"
+environmental_trace = "example/environmental.csv"
+variant_name = "greenfilling"
+variant_options = "example/options.json"
+
+[[experiment]]
+
+name = "example-2"
+workload = "example/workload.json"
+platform = "example/platform.xml"
+environmental_trace = "example/environmental.csv"
+variant_name = "greenfilling"
+variant_options = "example/options.json"
+
+
+[[experiment]]
+
+name = "example-3"
 workload = "example/workload.json"
 platform = "example/platform.xml"
 environmental_trace = "example/environmental.csv"

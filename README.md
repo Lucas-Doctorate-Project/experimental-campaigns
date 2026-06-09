@@ -21,7 +21,7 @@ A campaign is a TOML file with one or more `[[experiment]]` tables.
 ```toml
 [[experiment]]
 
-name = "example-exp"
+name = "example"
 workload = "example/workload.json"
 platform = "example/platform.xml"
 environmental_trace = "example/environmental.csv"
@@ -78,10 +78,10 @@ The runner launches experiments in declaration order, with up to `runtime.NumCPU
 
 ## Inspect the output
 
-For an experiment named `example-exp`.
+For an experiment named `example`.
 
-- `out/example-exp/batsched.log`, `out/example-exp/batsched.err`: Batsched stdout and stderr.
-- `out/example-exp/batsim.log`, `out/example-exp/batsim.err`: Batsim stdout and stderr.
-- `out/example-exp/out_*.csv`: Batsim exports. Main ones are `out_jobs.csv` (per-job metrics) and `out_schedule.csv` (run aggregates).
+- `out/example/batsched.log`, `out/example/batsched.err`: Batsched stdout and stderr.
+- `out/example/batsim.log`, `out/example/batsim.err`: Batsim stdout and stderr.
+- `out/example/out_*.csv`: Batsim exports. Main ones are `out_jobs.csv` (per-job metrics) and `out_schedule.csv` (run aggregates).
 
 Log files are opened in append mode. Delete the directory between runs for a clean slate.
