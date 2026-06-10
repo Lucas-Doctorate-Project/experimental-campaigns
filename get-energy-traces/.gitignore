@@ -1,0 +1,5 @@
+.env
+.entsoe_cache/
+__pycache__/
+*.pyc
+outputs/
