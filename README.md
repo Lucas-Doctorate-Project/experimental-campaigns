@@ -1,5 +1,7 @@
 # Experimental Campaigns
 
+> **Deprecated.** This repository has been merged into [experimental-artifacts](https://github.com/Lucas-Doctorate-Project/experimental-artifacts). The Go campaign runner now lives under `experiments/` in that repo, and the flake there provides the full toolchain. This repository is archived and will not receive updates.
+
 Runner for campaigns of Batsim simulations driven by the Batsched scheduler. Each experiment launches Batsim and Batsched as a pair of co-running processes wired over a ZMQ socket. The runner captures their logs, enforces timeouts, and writes artifacts into a per-experiment directory.
 
 The bash-based implementation now lives in [`bash/`](bash/). See [`bash/README.md`](bash/README.md) for its layout and usage.
